@@ -1,4 +1,5 @@
 require 'colorize'
+require 'awesome_print'
 require 'active_support/core_ext/numeric/time'
 
 
@@ -23,6 +24,17 @@ module DavinciThreader
     attr_accessor :extras
     attr_accessor :max_threads
     attr_accessor :asynchronous
+    def show_output=(_on)
+      @show_output = _on
+      if !_on
+        @monitor.try(:exit)
+        @monitor = nil
+      end
+    end
+    def show_output
+      @show_output
+    end
+    attr_accessor :synchronous_items
     attr_reader :thread_count
     # ======================================================
 
@@ -39,30 +51,36 @@ module DavinciThreader
       self.extras = []
       self.max_threads = 10
       self.asynchronous = true
+      self.show_output = true
+      self.synchronous_items = []
       @threads = []
       @thread_count = 0
 
       @monitor = Thread.new do
         while self.log
-          printout if @start_time
+          printout if self.show_output && @start_time
           sleep 0.1
         end
       end
 
-      yield self
+      yield(self)
 
-      @threads.each &:join
-      sleep 1
-      @monitor.exit
-      puts "\n-> Done!".light_green if self.log
+      @threads.each(&:join)
+      @threads_finished_at = Time.now
+      @monitor.try(:exit)
+      print "\n" if self.show_output && @synchronous
+      @synchronous.try(:join)
+      @synchronous.try(:exit)
+      puts "\n-> Done!".light_green if self.show_output && self.log
 
     rescue Interrupt
 
-      @monitor.exit
+      @monitor.try(:exit)
 
       begin
         puts "\n-> Waiting for remaining threads to finish...".yellow
         @threads.each(&:join)
+        @synchronous.try(:exit)
         puts "-> Exited!".yellow
       rescue Interrupt
         force_exit
@@ -73,6 +91,27 @@ module DavinciThreader
     end
     # ======================================================
 
+    # Synchronous Action
+    # ======================================================
+    def synchronous_action
+      @synchronous = Thread.new do
+        begin
+          while !@threads_finished_at || self.synchronous_items.count > 0
+            if self.synchronous_items.count == 0
+              sleep(1)
+            else
+              yield(self.synchronous_items.first)
+              self.synchronous_items.shift
+              self.synchronous_printout if self.show_output && @threads_finished_at
+            end
+          end
+        rescue => e
+          ap e.message
+          ap e.backtrace
+        end
+      end
+    end
+    # ======================================================
 
     # Make Thread
     # ======================================================
@@ -82,7 +121,7 @@ module DavinciThreader
 
       if !self.asynchronous
         yield(*args)
-        self.printout
+        self.printout if self.show_output
         return
       end
 
@@ -119,22 +158,39 @@ module DavinciThreader
     # ======================================================
     def printout
 
-        c = Time.now - @start_time
+        c = (@threads_finished_at || Time.now) - @start_time
         output = []
         if self.asynchronous
           output << "#{"#{@rpm.to_i}/MIN".cyan}"
           output << "#{Time.at(c.to_f).utc.strftime("%H:%M:%S")}"
           if self.completed > 100
             actual_rate = (self.completed.to_f / c.to_f) * 60.0
-            output << "#{actual_rate.round}/MIN".light_green
+            output << "#{'%.2f' % actual_rate}/MIN".light_green
             output << "#{Time.at(((self.total-self.completed).to_f / actual_rate) * 60.0).utc.strftime("%H:%M:%S")}".light_green
           end
         end
         output << "#{self.completed}/#{self.total} (#{self.successful.to_s.light_green} <--> #{self.errors.to_s.light_red})"
+        output << "Synchronous: #{"#{self.synchronous_items.count}".purple}" if @synchronous
         output += self.extras
         print "\r#{output.join(" :: ".yellow)}    "
 
       end
+    # ======================================================
+
+    # Synchronous Printout
+    # ======================================================
+    def synchronous_printout
+      elapsed_time = Time.now - @threads_finished_at
+      @synchronous_remaining = self.synchronous_items.count
+      @synchronous_start_count ||= @synchronous_remaining
+      @synchronous_completed = @synchronous_start_count - @synchronous_remaining
+      if @synchronous_completed > 0
+        @synchronous_rate_per_second = @synchronous_completed.to_f / elapsed_time
+        seconds_remaining = @synchronous_remaining.to_f / @synchronous_rate_per_second
+        @synchronous_nice_time = Time.at(seconds_remaining).utc.strftime("%H:%M:%S")
+      end
+      print "\r#{"Synchronous".purple} -> Remaining: #{"#{@synchronous_remaining}".light_yellow} :: Completed: #{"#{@synchronous_completed}".light_green} :: Rate: #{"#{'%.2f' % ((@synchronous_rate_per_second || 0) * 60.0)}".light_cyan} :: #{"#{@synchronous_nice_time}".light_green}  "
+    end
     # ======================================================
 
     # Increment Methods
@@ -156,6 +212,7 @@ module DavinciThreader
       @monitor.try(:exit)
       puts "\n-> Killing remaining threads...".light_red
       @threads.each(&:exit)
+      @synchronous.try(:exit)
       puts "-> Forced Exit!".light_red
     end
     # ======================================================
