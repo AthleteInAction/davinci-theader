@@ -35,6 +35,7 @@ module DavinciThreader
       @show_output
     end
     attr_accessor :synchronous_items
+    attr_accessor :synchronous_completed
     attr_reader :thread_count
     # ======================================================
 
@@ -53,6 +54,7 @@ module DavinciThreader
       self.asynchronous = true
       self.show_output = true
       self.synchronous_items = []
+      self.synchronous_completed = 0
       @threads = []
       @thread_count = 0
 
@@ -68,7 +70,10 @@ module DavinciThreader
       @threads.each(&:join)
       @threads_finished_at = Time.now
       @monitor.try(:exit)
-      print "\n" if self.show_output && @synchronous
+      if self.show_output && @synchronous
+        self.printout
+        print "\n"
+      end
       @synchronous.try(:join)
       @synchronous.try(:exit)
       puts "\n-> Done!".light_green if self.show_output && self.log
@@ -102,6 +107,7 @@ module DavinciThreader
             else
               yield(self.synchronous_items.first)
               self.synchronous_items.shift
+              self.synchronous_completed += 1
               self.synchronous_printout if self.show_output && @threads_finished_at
             end
           end
@@ -183,13 +189,13 @@ module DavinciThreader
       elapsed_time = Time.now - @threads_finished_at
       @synchronous_remaining = self.synchronous_items.count
       @synchronous_start_count ||= @synchronous_remaining
-      @synchronous_completed = @synchronous_start_count - @synchronous_remaining
-      if @synchronous_completed > 0
-        @synchronous_rate_per_second = @synchronous_completed.to_f / elapsed_time
+      @synchronous_completed_after_start = @synchronous_start_count - @synchronous_remaining
+      if @synchronous_completed_after_start > 0
+        @synchronous_rate_per_second = @synchronous_completed_after_start.to_f / elapsed_time
         seconds_remaining = @synchronous_remaining.to_f / @synchronous_rate_per_second
         @synchronous_nice_time = Time.at(seconds_remaining).utc.strftime("%H:%M:%S")
       end
-      print "\r#{"Synchronous".purple} -> Remaining: #{"#{@synchronous_remaining}".light_yellow} :: Completed: #{"#{@synchronous_completed}".light_green} :: Rate: #{"#{'%.2f' % ((@synchronous_rate_per_second || 0) * 60.0)}".light_cyan} :: #{"#{@synchronous_nice_time}".light_green}  "
+      print "\r#{"Synchronous".purple} -> Remaining: #{"#{@synchronous_remaining}".light_yellow} :: Completed: #{"#{self.synchronous_completed}".light_green} :: Rate: #{"#{'%.2f' % ((@synchronous_rate_per_second || 0) * 60.0)}".light_cyan} :: #{"#{@synchronous_nice_time}".light_green}  "
     end
     # ======================================================
 
